@@ -173,6 +173,7 @@ class ServiceGenerateExecuteMixin:
                             src_latents=payload["src_latents"],
                             seed=seed_param,
                             infer_method=infer_method,
+                            infer_steps=generate_kwargs.get("infer_steps", 8),
                             shift=shift,
                             timesteps=generate_kwargs.get("timesteps"),
                             audio_cover_strength=audio_cover_strength,

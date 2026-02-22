@@ -34,14 +34,20 @@ SHIFT_TIMESTEPS = {
 def get_timestep_schedule(
     shift: float = 3.0,
     timesteps: Optional[list] = None,
+    infer_steps: int = 8,
+    is_turbo: bool = True,
 ) -> List[float]:
     """Compute the timestep schedule for diffusion sampling.
 
-    Replicates the logic from the turbo model's ``generate_audio`` method.
+    For turbo variants, this keeps the fast fixed schedule behavior.
+    For base variants, this mirrors the PyTorch base schedule:
+    linspace(1 -> 0, infer_steps + 1) with optional shift transform.
 
     Args:
         shift: Diffusion timestep shift (1, 2, or 3).
         timesteps: Optional custom list of timesteps.
+        infer_steps: Requested inference step count for base variants.
+        is_turbo: Whether the loaded DiT config is turbo.
 
     Returns:
         List of timestep values (descending, without trailing 0).
@@ -49,26 +55,38 @@ def get_timestep_schedule(
     t_schedule_list = None
 
     if timesteps is not None:
-        ts_list = list(timesteps)
+        ts_list = [float(t) for t in list(timesteps)]
         # Remove trailing zeros
-        while ts_list and ts_list[-1] == 0:
+        while ts_list and abs(ts_list[-1]) < 1e-12:
             ts_list.pop()
         if len(ts_list) < 1:
             logger.warning("timesteps empty after removing zeros; using default shift=%s", shift)
         else:
-            if len(ts_list) > 20:
-                logger.warning("timesteps length=%d > 20; truncating", len(ts_list))
-                ts_list = ts_list[:20]
-            # Map each timestep to the nearest valid value
-            mapped = [min(VALID_TIMESTEPS, key=lambda x, t=t: abs(x - t)) for t in ts_list]
-            t_schedule_list = mapped
+            if is_turbo:
+                if len(ts_list) > 20:
+                    logger.warning("timesteps length=%d > 20; truncating", len(ts_list))
+                    ts_list = ts_list[:20]
+                # Turbo supports a discrete valid schedule set.
+                mapped = [min(VALID_TIMESTEPS, key=lambda x, t=t: abs(x - t)) for t in ts_list]
+                t_schedule_list = mapped
+            else:
+                t_schedule_list = ts_list
 
     if t_schedule_list is None:
-        original_shift = shift
-        shift = min(VALID_SHIFTS, key=lambda x: abs(x - shift))
-        if original_shift != shift:
-            logger.warning("shift=%.2f rounded to nearest valid shift=%.1f", original_shift, shift)
-        t_schedule_list = SHIFT_TIMESTEPS[shift]
+        if is_turbo:
+            original_shift = shift
+            shift = min(VALID_SHIFTS, key=lambda x: abs(x - shift))
+            if original_shift != shift:
+                logger.warning("shift=%.2f rounded to nearest valid shift=%.1f", original_shift, shift)
+            t_schedule_list = SHIFT_TIMESTEPS[shift]
+        else:
+            # Base model schedule parity with PyTorch generate_audio():
+            # t = linspace(1.0, 0.0, infer_steps + 1), then optional shift.
+            infer_steps = max(1, int(infer_steps))
+            t = np.linspace(1.0, 0.0, infer_steps + 1, dtype=np.float32)
+            if shift != 1.0:
+                t = shift * t / (1 + (shift - 1) * t)
+            t_schedule_list = [float(x) for x in t[:-1]]
 
     return t_schedule_list
 
@@ -80,8 +98,10 @@ def mlx_generate_diffusion(
     src_latents_shape: Tuple[int, ...],
     seed: Optional[Union[int, List[int]]] = None,
     infer_method: str = "ode",
+    infer_steps: int = 8,
     shift: float = 3.0,
     timesteps: Optional[list] = None,
+    is_turbo: bool = True,
     audio_cover_strength: float = 1.0,
     encoder_hidden_states_non_cover_np: Optional[np.ndarray] = None,
     context_latents_non_cover_np: Optional[np.ndarray] = None,
@@ -101,8 +121,10 @@ def mlx_generate_diffusion(
         src_latents_shape: shape tuple [B, T, 64] for noise generation.
         seed: random seed (int, list[int], or None).
         infer_method: "ode" or "sde".
+        infer_steps: Requested diffusion step count.
         shift: timestep shift factor.
         timesteps: optional custom timestep list.
+        is_turbo: Whether the loaded DiT config is turbo.
         audio_cover_strength: cover strength (0-1).
         encoder_hidden_states_non_cover_np: optional [B, enc_L, D] for non-cover.
         context_latents_non_cover_np: optional [B, T, C] for non-cover.
@@ -149,7 +171,12 @@ def mlx_generate_diffusion(
         noise = mx.random.normal((bsz, T, C), key=key)
 
     # ---- Timestep schedule ----
-    t_schedule_list = get_timestep_schedule(shift, timesteps)
+    t_schedule_list = get_timestep_schedule(
+        shift=shift,
+        timesteps=timesteps,
+        infer_steps=infer_steps,
+        is_turbo=is_turbo,
+    )
     num_steps = len(t_schedule_list)
 
     cover_steps = int(num_steps * audio_cover_strength)
