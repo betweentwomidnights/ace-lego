@@ -22,6 +22,7 @@ class PaddingMixin:
         is_lego_task,
         is_cover_task,
         can_use_repainting,
+        is_complete_task=False,
     ):
         """Prepare padded target wavs and repaint coordinates for each batch item."""
         try:
@@ -66,6 +67,26 @@ class PaddingMixin:
                                 "right_padding_duration": right_padding_duration,
                             }
                         )
+                    elif is_complete_task:
+                        # Complete task: pad source audio to the desired audio_duration if longer.
+                        # The padded tensor (src + silence) gives the DiT harmonic/rhythmic context
+                        # from the source while providing space to complete the arrangement.
+                        src_audio_duration = processed_src_audio.shape[-1] / 48000.0
+                        target_duration = (
+                            float(audio_duration)
+                            if audio_duration is not None and float(audio_duration) > src_audio_duration
+                            else src_audio_duration
+                        )
+                        right_padding_frames = int(max(0, target_duration - src_audio_duration) * 48000)
+                        if right_padding_frames > 0:
+                            batch_target_wavs = torch.nn.functional.pad(
+                                processed_src_audio, (0, right_padding_frames), "constant", 0
+                            )
+                        else:
+                            batch_target_wavs = processed_src_audio
+                        padding_info_batch.append(
+                            {"left_padding_duration": 0.0, "right_padding_duration": target_duration - src_audio_duration}
+                        )
                     else:
                         # Other tasks: Use src_audio directly without padding
                         batch_target_wavs = processed_src_audio
@@ -96,60 +117,76 @@ class PaddingMixin:
             target_wavs_tensor = torch.stack(padded_target_wavs, dim=0)  # [batch_size, 2, frames]
 
             if can_use_repainting:
-                # Repaint task: Set repainting parameters
-                if repainting_start is None:
-                    repainting_start_batch = None
-                elif isinstance(repainting_start, (int, float)):
-                    if processed_src_audio is not None:
-                        adjusted_start = repainting_start + padding_info_batch[0]["left_padding_duration"]
-                        repainting_start_batch = [adjusted_start] * actual_batch_size
-                    else:
-                        repainting_start_batch = [repainting_start] * actual_batch_size
-                else:
-                    # List input - adjust each item
-                    repainting_start_batch = []
-                    for i in range(actual_batch_size):
-                        if processed_src_audio is not None:
-                            adjusted_start = repainting_start[i] + padding_info_batch[i]["left_padding_duration"]
-                            repainting_start_batch.append(adjusted_start)
-                        else:
-                            repainting_start_batch.append(repainting_start[i])
-
-                # Handle repainting_end - use src audio duration if not specified or negative
-                if processed_src_audio is not None:
-                    # If src audio is provided, use its duration as default end
+                if is_complete_task and processed_src_audio is not None:
+                    # Complete task: outpainting — preserve the source audio as-is and
+                    # generate from the end of the source to the desired duration.
+                    # repainting_start = src_audio_duration → source is locked in as context
+                    # repainting_end   = target_duration    → generate until end of desired output
+                    # conditioning_masks will zero out src_latent[src_end:target_end] and set
+                    # the chunk_mask True only for that region, so the DiT generates only the
+                    # continuation while the original source frames remain untouched.
                     src_audio_duration = processed_src_audio.shape[-1] / 48000.0
-                    if repainting_end is None or repainting_end < 0:
-                        if is_lego_task:
-                            # For lego with full-audio mask, leave repainting_end as None so
-                            # conditioning_masks takes the full-mask branch, which preserves
-                            # src_latents as the full source audio context. If we convert -1
-                            # to the audio duration here, conditioning_masks enters the
-                            # repainting branch and silences the entire src_latents tensor,
-                            # giving the DiT zero harmonic/rhythmic context from the source.
-                            repainting_end_batch = None
-                        else:
-                            # Use src audio duration (before padding), then adjust for padding
-                            adjusted_end = src_audio_duration + padding_info_batch[0]["left_padding_duration"]
-                            repainting_end_batch = [adjusted_end] * actual_batch_size
-                    else:
-                        # Adjust repainting_end to be relative to padded audio
-                        adjusted_end = repainting_end + padding_info_batch[0]["left_padding_duration"]
-                        repainting_end_batch = [adjusted_end] * actual_batch_size
+                    target_duration = (
+                        float(audio_duration)
+                        if audio_duration is not None and float(audio_duration) > src_audio_duration
+                        else src_audio_duration
+                    )
+                    repainting_start_batch = [src_audio_duration] * actual_batch_size
+                    repainting_end_batch = [target_duration] * actual_batch_size
                 else:
-                    # No src audio - repainting doesn't make sense without it
-                    if repainting_end is None or repainting_end < 0:
-                        repainting_end_batch = None
-                    elif isinstance(repainting_end, (int, float)):
-                        repainting_end_batch = [repainting_end] * actual_batch_size
+                    # Repaint / lego task: Set repainting parameters
+                    if repainting_start is None:
+                        repainting_start_batch = None
+                    elif isinstance(repainting_start, (int, float)):
+                        if processed_src_audio is not None:
+                            adjusted_start = repainting_start + padding_info_batch[0]["left_padding_duration"]
+                            repainting_start_batch = [adjusted_start] * actual_batch_size
+                        else:
+                            repainting_start_batch = [repainting_start] * actual_batch_size
                     else:
                         # List input - adjust each item
-                        repainting_end_batch = []
+                        repainting_start_batch = []
                         for i in range(actual_batch_size):
-                            repainting_end_batch.append(repainting_end[i])
+                            if processed_src_audio is not None:
+                                adjusted_start = repainting_start[i] + padding_info_batch[i]["left_padding_duration"]
+                                repainting_start_batch.append(adjusted_start)
+                            else:
+                                repainting_start_batch.append(repainting_start[i])
+
+                    # Handle repainting_end - use src audio duration if not specified or negative
+                    if processed_src_audio is not None:
+                        # If src audio is provided, use its duration as default end
+                        src_audio_duration = processed_src_audio.shape[-1] / 48000.0
+                        if repainting_end is None or repainting_end < 0:
+                            if is_lego_task:
+                                # For lego with full-audio mask, leave repainting_end as None so
+                                # conditioning_masks takes the full-mask branch, which preserves
+                                # src_latents as the full source audio context. Converting -1
+                                # to the audio duration routes through the repainting branch
+                                # which silences the entire src_latents tensor, giving the DiT
+                                # zero harmonic/rhythmic context from the source.
+                                repainting_end_batch = None
+                            else:
+                                # Use src audio duration (before padding), then adjust for padding
+                                adjusted_end = src_audio_duration + padding_info_batch[0]["left_padding_duration"]
+                                repainting_end_batch = [adjusted_end] * actual_batch_size
+                        else:
+                            # Adjust repainting_end to be relative to padded audio
+                            adjusted_end = repainting_end + padding_info_batch[0]["left_padding_duration"]
+                            repainting_end_batch = [adjusted_end] * actual_batch_size
+                    else:
+                        # No src audio - repainting doesn't make sense without it
+                        if repainting_end is None or repainting_end < 0:
+                            repainting_end_batch = None
+                        elif isinstance(repainting_end, (int, float)):
+                            repainting_end_batch = [repainting_end] * actual_batch_size
+                        else:
+                            # List input - adjust each item
+                            repainting_end_batch = []
+                            for i in range(actual_batch_size):
+                                repainting_end_batch.append(repainting_end[i])
             else:
-                # All other tasks (cover, text2music, extract, complete): No repainting
-                # Only repaint and lego tasks should have repainting parameters
+                # All other tasks (cover, text2music, extract): No repainting
                 repainting_start_batch = None
                 repainting_end_batch = None
 

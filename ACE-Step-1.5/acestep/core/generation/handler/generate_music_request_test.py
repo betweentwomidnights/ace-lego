@@ -27,7 +27,7 @@ class _Host(GenerateMusicRequestMixin):
         self.prepare_batch_data = lambda *args, **kwargs: (
             ["cap"], ["inst"], ["lyr"], ["en"], ["meta"]
         )
-        self.determine_task_type = lambda task, codes: (False, False, task == "cover", True)
+        self.determine_task_type = lambda task, codes: (False, False, task == "cover", True, task == "complete")
         self.prepare_padding_info = lambda *args, **kwargs: ([0.0], [1.0], torch.zeros(1, 2, 100))
 
 
