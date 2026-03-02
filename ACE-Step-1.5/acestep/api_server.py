@@ -364,6 +364,7 @@ PARAM_ALIASES = {
     "seed": ["seed"],
 
     "audio_cover_strength": ["audio_cover_strength", "audioCoverStrength"],
+    "cover_noise_strength": ["cover_noise_strength", "coverNoiseStrength"],
     "reference_audio_path": ["reference_audio_path", "ref_audio_path", "referenceAudioPath", "refAudioPath"],
     "src_audio_path": ["src_audio_path", "ctx_audio_path", "sourceAudioPath", "srcAudioPath", "ctxAudioPath"],
     "task_type": ["task_type", "taskType"],
@@ -492,6 +493,7 @@ class GenerateMusicRequest(BaseModel):
 
     instruction: str = DEFAULT_DIT_INSTRUCTION
     audio_cover_strength: float = 1.0
+    cover_noise_strength: float = 0.0
     task_type: str = "text2music"
     analysis_only: bool = False
     full_analysis_only: bool = False
@@ -1775,6 +1777,7 @@ def create_app() -> FastAPI:
                     repainting_start=req.repainting_start,
                     repainting_end=req.repainting_end if req.repainting_end else -1,
                     audio_cover_strength=req.audio_cover_strength,
+                    cover_noise_strength=req.cover_noise_strength,
                     # LM parameters
                     thinking=thinking,  # Use LM for code generation when thinking=True
                     lm_temperature=req.lm_temperature,
@@ -2497,6 +2500,7 @@ def create_app() -> FastAPI:
                 repainting_end=p.float("repainting_end"),
                 instruction=p.str("instruction", DEFAULT_DIT_INSTRUCTION),
                 audio_cover_strength=p.float("audio_cover_strength", 1.0),
+                cover_noise_strength=p.float("cover_noise_strength", 0.0),
                 reference_audio_path=ref_audio,
                 src_audio_path=src_audio,
                 task_type=p.str("task_type", "text2music"),

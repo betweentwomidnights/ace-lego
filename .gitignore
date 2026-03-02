@@ -15,6 +15,10 @@ ACE-Step-1.5/acestep_output/
 /*.aac
 /*.ogg
 
+# Generated output folders (cover/extract experiment results)
+covers/
+extract/
+
 # ── Python ──────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
