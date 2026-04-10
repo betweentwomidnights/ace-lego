@@ -94,6 +94,13 @@ class TaskUtilsMixin:
                     TRACK_CLASSES=" | ".join(track_classes_upper)
                 )
             return TASK_INSTRUCTIONS["complete_default"]
+        if task_type == "prelude":
+            if complete_track_classes and len(complete_track_classes) > 0:
+                track_classes_upper = [t.upper() for t in complete_track_classes]
+                return TASK_INSTRUCTIONS["prelude"].format(
+                    TRACK_CLASSES=" | ".join(track_classes_upper)
+                )
+            return TASK_INSTRUCTIONS["prelude_default"]
         return TASK_INSTRUCTIONS["text2music"]
 
     def determine_task_type(self, task_type, audio_code_string):
@@ -101,6 +108,7 @@ class TaskUtilsMixin:
         is_repaint_task = task_type == "repaint"
         is_lego_task = task_type == "lego"
         is_complete_task = task_type == "complete"
+        is_prelude_task = task_type == "prelude"
         is_cover_task = task_type == "cover"
 
         if isinstance(audio_code_string, list):
@@ -110,8 +118,8 @@ class TaskUtilsMixin:
 
         if has_codes:
             is_cover_task = True
-        can_use_repainting = is_repaint_task or is_lego_task or is_complete_task
-        return is_repaint_task, is_lego_task, is_cover_task, can_use_repainting, is_complete_task
+        can_use_repainting = is_repaint_task or is_lego_task or is_complete_task or is_prelude_task
+        return is_repaint_task, is_lego_task, is_cover_task, can_use_repainting, is_complete_task, is_prelude_task
 
     def create_target_wavs(self, duration_seconds: float) -> torch.Tensor:
         """Create silent stereo target audio with safe duration handling."""

@@ -71,7 +71,7 @@ VALID_TIME_SIGNATURES = [2, 3, 4, 6]
 # ==============================================================================
 
 # All supported generation tasks across different model variants
-TASK_TYPES = ["text2music", "repaint", "cover", "extract", "lego", "complete"]
+TASK_TYPES = ["text2music", "repaint", "cover", "extract", "lego", "complete", "prelude"]
 
 # Task types available for turbo models (optimized subset for speed)
 # - text2music: Generate from text descriptions
@@ -84,7 +84,7 @@ TASK_TYPES_TURBO = ["text2music", "repaint", "cover"]
 # - extract: Separate individual tracks/stems from audio
 # - lego: Multi-track generation (add layers)
 # - complete: Automatic completion of partial audio
-TASK_TYPES_BASE = ["text2music", "repaint", "cover", "extract", "lego", "complete"]
+TASK_TYPES_BASE = ["text2music", "repaint", "cover", "extract", "lego", "complete", "prelude"]
 
 
 # ==============================================================================
@@ -106,6 +106,7 @@ MODE_TO_TASK_TYPE = {
     "Extract": "extract",
     "Lego": "lego",
     "Complete": "complete",
+    "Prelude": "prelude",
 }
 
 
@@ -133,6 +134,8 @@ TASK_INSTRUCTIONS = {
     "lego_default": "Generate the track based on the audio context:",
     "complete": "Complete the input track with {TRACK_CLASSES}:",
     "complete_default": "Complete the input track:",
+    "prelude": "Generate a lead-in to the input track with {TRACK_CLASSES}:",
+    "prelude_default": "Generate a lead-in to the input track:",
 }
 
 

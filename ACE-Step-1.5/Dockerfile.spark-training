@@ -1,0 +1,30 @@
+# Dockerfile.spark-training
+# ACE-Step 1.5 LoRA training — layered on top of production image
+#
+# Build:
+#   docker build -f Dockerfile.spark-training -t ace-step-training:latest .
+#
+# Run:
+#   docker run --gpus all -p 8006:8001 \
+#     -v /home/kev/ace/checkpoints:/app/checkpoints \
+#     -v /home/kev/ace/data:/app/data \
+#     -v /home/kev/ace/training:/app/training \
+#     ace-step-training:latest
+
+FROM ace-step-spark:latest
+
+# ── Additional training dependencies ─────────────────────────────────
+# bitsandbytes  : 8-bit AdamW optimizer (VRAM savings)
+# prodigyopt    : Adaptive learning rate optimizer
+# yt-dlp        : Download training audio from YouTube
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+        bitsandbytes \
+        prodigyopt \
+        yt-dlp
+
+# Training data and output directories
+VOLUME ["/app/training"]
+
+# Use same entrypoint — training API routes are already in api_server.py
+# Port 8001 internally, map to 8006 (or whatever) externally
+CMD ["python3", "acestep/api_server.py", "--host", "0.0.0.0", "--port", "8001"]

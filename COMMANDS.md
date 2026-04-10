@@ -2,6 +2,8 @@
 
 ## Container
 
+docker run -d --gpus all   --name ace-step-spark   --restart unless-stopped   -p 8001:8001   -v /home/kev/ace/checkpoints:/app/checkpoints   -v /home/kev/ace/data:/app/data   -e ACESTEP_CONFIG_PATH=acestep-v15-base   -e ACESTEP_INIT_LLM=false   ace-step-spark:latest
+
 ```bash
 # Text2music (turbo, default)
 docker run --gpus all -p 8001:8001 \

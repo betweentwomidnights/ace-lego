@@ -1,0 +1,108 @@
+# Dockerfile.spark-fa2
+# ACE-Step 1.5 — DGX Spark (aarch64, CUDA 13.0) + Flash Attention 2
+# EXPERIMENTAL — do NOT tag as production images.
+#
+# Build:
+#   docker build -f Dockerfile.spark-fa2 -t ace-step-spark:xl-base-fa2 .
+#
+# Multi-stage: compile flash-attn in devel image, copy wheel to runtime.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Stage 1: Build flash-attn from source (needs nvcc + CUDA headers)
+# ═══════════════════════════════════════════════════════════════════════════════
+FROM nvidia/cuda:13.0.1-devel-ubuntu24.04 AS fa2-builder
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-dev build-essential git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install torch first — flash-attn needs torch headers to compile
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+        torch==2.12.0.dev20260219+cu130 \
+        --extra-index-url https://download.pytorch.org/whl/nightly/cu130
+
+# Build deps
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+        ninja packaging setuptools wheel
+
+# Compile flash-attn targeting sm_121 (Blackwell GB10)
+ENV FLASH_ATTENTION_CUDA_ARCHS=121 \
+    MAX_JOBS=2
+
+# Build as wheel so we can copy it to the runtime stage
+RUN python3 -m pip wheel --no-build-isolation --no-deps \
+        flash-attn==2.8.3 \
+        -w /tmp/fa2-wheel \
+    || python3 -m pip wheel --no-build-isolation --no-deps \
+        flash-attn==2.7.4.post1 \
+        -w /tmp/fa2-wheel
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Stage 2: Runtime (same as Dockerfile.spark + flash-attn wheel)
+# ═══════════════════════════════════════════════════════════════════════════════
+FROM nvidia/cuda:13.0.1-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-dev build-essential git curl \
+        libsndfile1 ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ── PyTorch nightly cu130 ────────────────────────────────────────────────────
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+        torch==2.12.0.dev20260219+cu130 \
+        torchvision==0.26.0.dev20260219+cu130 \
+        torchaudio==2.11.0.dev20260219+cu130 \
+        --extra-index-url https://download.pytorch.org/whl/nightly/cu130
+
+# ── Flash Attention 2 (pre-built wheel from stage 1) ────────────────────────
+COPY --from=fa2-builder /tmp/fa2-wheel /tmp/fa2-wheel
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+        --no-deps /tmp/fa2-wheel/*.whl \
+    && rm -rf /tmp/fa2-wheel \
+    && python3 -c "import flash_attn; print('flash-attn', flash_attn.__version__)"
+
+# ── Repo source ──────────────────────────────────────────────────────────────
+COPY . /app
+
+# ── nano-vllm ────────────────────────────────────────────────────────────────
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+        -e /app/acestep/third_parts/nano-vllm
+
+# ── ACE-Step dependencies ────────────────────────────────────────────────────
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+        -r /app/requirements-spark.txt
+
+# ── Patches ──────────────────────────────────────────────────────────────────
+RUN python3 /app/docker-patches/fix_qwen3_rope.py
+RUN python3 /app/docker-patches/fix_torchao_quantizer.py
+
+# ── Register entry points ────────────────────────────────────────────────────
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+        --no-deps -e /app
+
+# ── Smoke tests ──────────────────────────────────────────────────────────────
+RUN python3 -c "import torch; print('torch', torch.__version__, '| CUDA build:', torch.version.cuda)"
+RUN python3 -c "import flash_attn; print('flash-attn', flash_attn.__version__)"
+
+# ── Runtime config ───────────────────────────────────────────────────────────
+ENV ACESTEP_CONFIG_PATH=acestep-v15-base \
+    ACESTEP_INIT_LLM=false \
+    ACESTEP_DOWNLOAD_SOURCE=huggingface
+
+VOLUME ["/app/checkpoints", "/app/data"]
+EXPOSE 8001
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
+    CMD curl -sf http://localhost:8001/health || exit 1
+
+CMD ["python3", "acestep/api_server.py", "--host", "0.0.0.0", "--port", "8001"]

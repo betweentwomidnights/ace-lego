@@ -64,8 +64,92 @@ class ConditioningTargetMixin:
                             )
                             target_latent = _cached_latent.clone()
                         else:
-                            logger.info(f"[generate_music] Encoding target audio to latents for item {i}...")
-                            target_latent = self._encode_audio_to_latents(current_wav.squeeze(0))
+                            # Detect silence head/tail (e.g. zero-padded prelude/complete
+                            # mode audio) and encode only the real audio portion, then
+                            # concat with clean silence_latent to avoid VAE boundary
+                            # artifacts.
+                            wav_2d = current_wav.squeeze(0)  # [2, samples]
+                            energy = wav_2d.pow(2).sum(0)     # per-sample energy
+                            nonzero = (energy > 1e-10).nonzero(as_tuple=True)[0]
+                            total_samples = wav_2d.shape[-1]
+
+                            if len(nonzero) > 0:
+                                first_audio_sample = nonzero[0].item()
+                                last_audio_sample = nonzero[-1].item() + 1
+                            else:
+                                first_audio_sample = 0
+                                last_audio_sample = 0
+
+                            silence_head_samples = first_audio_sample
+                            silence_tail_samples = total_samples - last_audio_sample
+
+                            if silence_head_samples > 1920 and last_audio_sample > 0:
+                                # Prelude mode: silence at the beginning, audio at the end.
+                                # Round down head to nearest latent frame boundary so audio
+                                # starts on a clean frame.
+                                head_latent_frames = silence_head_samples // 1920
+                                encode_start = head_latent_frames * 1920
+                                audio_portion = wav_2d[:, encode_start:]
+                                # Also strip any silence tail
+                                real_end = last_audio_sample - encode_start
+                                encode_end = ((real_end + 1919) // 1920) * 1920
+                                encode_end = min(encode_end, audio_portion.shape[-1])
+                                audio_portion = audio_portion[:, :encode_end]
+                                logger.info(
+                                    f"[generate_music] Encoding source audio "
+                                    f"({audio_portion.shape[-1] / 48000:.2f}s) separately from "
+                                    f"silence head ({silence_head_samples / 48000:.2f}s) "
+                                    f"for item {i}..."
+                                )
+                                target_latent = self._encode_audio_to_latents(audio_portion)
+                                # Prepend clean silence_latent for the head
+                                full_latent_length = total_samples // 1920
+                                if head_latent_frames + target_latent.shape[0] < full_latent_length:
+                                    tail_pad = full_latent_length - head_latent_frames - target_latent.shape[0]
+                                    target_latent = torch.cat(
+                                        [
+                                            self.silence_latent[0, :head_latent_frames, :].to(target_latent.device),
+                                            target_latent,
+                                            self.silence_latent[0, :tail_pad, :].to(target_latent.device),
+                                        ],
+                                        dim=0,
+                                    )
+                                else:
+                                    target_latent = torch.cat(
+                                        [
+                                            self.silence_latent[0, :head_latent_frames, :].to(target_latent.device),
+                                            target_latent,
+                                        ],
+                                        dim=0,
+                                    )
+                                    # Trim to exact length if needed
+                                    if target_latent.shape[0] > full_latent_length:
+                                        target_latent = target_latent[:full_latent_length]
+                            elif silence_tail_samples > 1920 and last_audio_sample > 0:
+                                # Complete mode: audio at the beginning, silence at the end.
+                                # Round up to nearest latent frame boundary
+                                encode_samples = ((last_audio_sample + 1919) // 1920) * 1920
+                                encode_samples = min(encode_samples, total_samples)
+                                audio_portion = wav_2d[:, :encode_samples]
+                                logger.info(
+                                    f"[generate_music] Encoding source audio "
+                                    f"({encode_samples / 48000:.2f}s) separately from "
+                                    f"silence tail ({silence_tail_samples / 48000:.2f}s) "
+                                    f"for item {i}..."
+                                )
+                                target_latent = self._encode_audio_to_latents(audio_portion)
+                                # Pad with clean silence_latent to full length
+                                full_latent_length = total_samples // 1920
+                                if target_latent.shape[0] < full_latent_length:
+                                    pad_len = full_latent_length - target_latent.shape[0]
+                                    target_latent = torch.cat(
+                                        [target_latent, self.silence_latent[0, :pad_len, :].to(target_latent.device)],
+                                        dim=0,
+                                    )
+                            else:
+                                logger.info(f"[generate_music] Encoding target audio to latents for item {i}...")
+                                target_latent = self._encode_audio_to_latents(wav_2d)
+
                             _cached_wav_ref = current_wav
                             _cached_latent = target_latent
                     target_latents_list.append(target_latent)

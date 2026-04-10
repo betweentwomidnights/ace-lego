@@ -98,7 +98,7 @@ RUN python3 -c "import torch; print('torch', torch.__version__, '| CUDA build:',
 #   acestep-v15-turbo (default) — fast, text2music, repaint, cover
 #   acestep-v15-base            — required for lego mode (separate HF repo: ACE-Step/acestep-v15-base)
 # ACESTEP_INIT_LLM    : false = DiT only (fastest start); true = also load 5Hz LM for thinking/lego quality
-ENV ACESTEP_CONFIG_PATH=acestep-v15-turbo \
+ENV ACESTEP_CONFIG_PATH=acestep-v15-base \
     ACESTEP_INIT_LLM=false \
     ACESTEP_DOWNLOAD_SOURCE=huggingface
 

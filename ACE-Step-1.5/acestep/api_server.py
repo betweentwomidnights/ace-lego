@@ -90,6 +90,10 @@ MODEL_REPO_MAPPING = {
     "acestep-v15-base": "ACE-Step/acestep-v15-base",
     "acestep-v15-sft": "ACE-Step/acestep-v15-sft",
     "acestep-v15-turbo-shift3": "ACE-Step/acestep-v15-turbo-shift3",
+    # XL (4B DiT) models
+    "acestep-v15-xl-base": "ACE-Step/acestep-v15-xl-base",
+    "acestep-v15-xl-sft": "ACE-Step/acestep-v15-xl-sft",
+    "acestep-v15-xl-turbo": "ACE-Step/acestep-v15-xl-turbo",
 }
 
 DEFAULT_REPO_ID = "ACE-Step/Ace-Step1.5"
@@ -365,6 +369,7 @@ PARAM_ALIASES = {
 
     "audio_cover_strength": ["audio_cover_strength", "audioCoverStrength"],
     "cover_noise_strength": ["cover_noise_strength", "coverNoiseStrength"],
+
     "reference_audio_path": ["reference_audio_path", "ref_audio_path", "referenceAudioPath", "refAudioPath"],
     "src_audio_path": ["src_audio_path", "ctx_audio_path", "sourceAudioPath", "srcAudioPath", "ctxAudioPath"],
     "task_type": ["task_type", "taskType"],
@@ -494,6 +499,7 @@ class GenerateMusicRequest(BaseModel):
     instruction: str = DEFAULT_DIT_INSTRUCTION
     audio_cover_strength: float = 1.0
     cover_noise_strength: float = 0.0
+
     task_type: str = "text2music"
     analysis_only: bool = False
     full_analysis_only: bool = False
@@ -1731,17 +1737,16 @@ def create_app() -> FastAPI:
                 if instruction_to_use == DEFAULT_DIT_INSTRUCTION and req.task_type in TASK_INSTRUCTIONS:
                     raw_instruction = TASK_INSTRUCTIONS[req.task_type]
 
-                    if req.task_type == "complete":
+                    if req.task_type in ("complete", "prelude"):
                          #  Use track_classes joined by pipes
                          if req.track_classes:
                              # Join list items: ["Drums", "Bass"] -> "DRUMS | BASS"
                              classes_str = " | ".join([str(t).upper() for t in req.track_classes])
-                             # Use the raw instruction template from constants
-                             # Format: "Complete the track with {TRACK_CLASSES}:"
                              instruction_to_use = raw_instruction.format(TRACK_CLASSES=classes_str)
                          else:
                              # Fallback if no classes provided
-                             instruction_to_use = TASK_INSTRUCTIONS.get("complete_default", raw_instruction)
+                             fallback_key = f"{req.task_type}_default"
+                             instruction_to_use = TASK_INSTRUCTIONS.get(fallback_key, raw_instruction)
 
                     elif "{TRACK_NAME}" in raw_instruction and req.track_name:
                         # Logic for extract/lego

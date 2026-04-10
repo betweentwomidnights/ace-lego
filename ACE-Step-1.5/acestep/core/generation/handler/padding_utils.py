@@ -23,6 +23,7 @@ class PaddingMixin:
         is_cover_task,
         can_use_repainting,
         is_complete_task=False,
+        is_prelude_task=False,
     ):
         """Prepare padded target wavs and repaint coordinates for each batch item."""
         try:
@@ -66,6 +67,26 @@ class PaddingMixin:
                                 "left_padding_duration": left_padding_duration,
                                 "right_padding_duration": right_padding_duration,
                             }
+                        )
+                    elif is_prelude_task:
+                        # Prelude task: LEFT-pad source audio with silence so the source
+                        # sits at the END of the tensor.  The DiT generates the lead-in
+                        # (silence region) while using the anchored source as context.
+                        src_audio_duration = processed_src_audio.shape[-1] / 48000.0
+                        target_duration = (
+                            float(audio_duration)
+                            if audio_duration is not None and float(audio_duration) > src_audio_duration
+                            else src_audio_duration
+                        )
+                        left_padding_frames = int(max(0, target_duration - src_audio_duration) * 48000)
+                        if left_padding_frames > 0:
+                            batch_target_wavs = torch.nn.functional.pad(
+                                processed_src_audio, (left_padding_frames, 0), "constant", 0
+                            )
+                        else:
+                            batch_target_wavs = processed_src_audio
+                        padding_info_batch.append(
+                            {"left_padding_duration": target_duration - src_audio_duration, "right_padding_duration": 0.0}
                         )
                     elif is_complete_task:
                         # Complete task: pad source audio to the desired audio_duration if longer.
@@ -117,7 +138,19 @@ class PaddingMixin:
             target_wavs_tensor = torch.stack(padded_target_wavs, dim=0)  # [batch_size, 2, frames]
 
             if can_use_repainting:
-                if is_complete_task and processed_src_audio is not None:
+                if is_prelude_task and processed_src_audio is not None:
+                    # Prelude task: generate from 0 up to where the source audio begins.
+                    # Source is anchored at the right end of the tensor.
+                    src_audio_duration = processed_src_audio.shape[-1] / 48000.0
+                    target_duration = (
+                        float(audio_duration)
+                        if audio_duration is not None and float(audio_duration) > src_audio_duration
+                        else src_audio_duration
+                    )
+                    lead_in_duration = target_duration - src_audio_duration
+                    repainting_start_batch = [0.0] * actual_batch_size
+                    repainting_end_batch = [lead_in_duration] * actual_batch_size
+                elif is_complete_task and processed_src_audio is not None:
                     # Complete task: outpainting — preserve the source audio as-is and
                     # generate from the end of the source to the desired duration.
                     # repainting_start = src_audio_duration → source is locked in as context
@@ -159,13 +192,12 @@ class PaddingMixin:
                         src_audio_duration = processed_src_audio.shape[-1] / 48000.0
                         if repainting_end is None or repainting_end < 0:
                             if is_lego_task:
-                                # For lego with full-audio mask, leave repainting_end as None so
-                                # conditioning_masks takes the full-mask branch, which preserves
-                                # src_latents as the full source audio context. Converting -1
-                                # to the audio duration routes through the repainting branch
-                                # which silences the entire src_latents tensor, giving the DiT
-                                # zero harmonic/rhythmic context from the source.
-                                repainting_end_batch = None
+                                # Lego: set repainting_end to src_audio_duration so conditioning_masks
+                                # enters the repainting branch. The lego marker detection there will
+                                # preserve src_latents (skip silencing) while giving the DiT a proper
+                                # repaint-style chunk_mask.
+                                adjusted_end = src_audio_duration + padding_info_batch[0]["left_padding_duration"]
+                                repainting_end_batch = [adjusted_end] * actual_batch_size
                             else:
                                 # Use src audio duration (before padding), then adjust for padding
                                 adjusted_end = src_audio_duration + padding_info_batch[0]["left_padding_duration"]
