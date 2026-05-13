@@ -188,20 +188,13 @@ class PaddingMixin:
 
                     # Handle repainting_end - use src audio duration if not specified or negative
                     if processed_src_audio is not None:
-                        # If src audio is provided, use its duration as default end
+                        # If src audio is provided, use its duration as default end.
+                        # Lego and repaint share this path: conditioning_masks decides
+                        # whether to preserve src_latents based on task_type == "lego".
                         src_audio_duration = processed_src_audio.shape[-1] / 48000.0
                         if repainting_end is None or repainting_end < 0:
-                            if is_lego_task:
-                                # Lego: set repainting_end to src_audio_duration so conditioning_masks
-                                # enters the repainting branch. The lego marker detection there will
-                                # preserve src_latents (skip silencing) while giving the DiT a proper
-                                # repaint-style chunk_mask.
-                                adjusted_end = src_audio_duration + padding_info_batch[0]["left_padding_duration"]
-                                repainting_end_batch = [adjusted_end] * actual_batch_size
-                            else:
-                                # Use src audio duration (before padding), then adjust for padding
-                                adjusted_end = src_audio_duration + padding_info_batch[0]["left_padding_duration"]
-                                repainting_end_batch = [adjusted_end] * actual_batch_size
+                            adjusted_end = src_audio_duration + padding_info_batch[0]["left_padding_duration"]
+                            repainting_end_batch = [adjusted_end] * actual_batch_size
                         else:
                             # Adjust repainting_end to be relative to padded audio
                             adjusted_end = repainting_end + padding_info_batch[0]["left_padding_duration"]

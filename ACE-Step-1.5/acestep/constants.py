@@ -70,21 +70,25 @@ VALID_TIME_SIGNATURES = [2, 3, 4, 6]
 # Task Type Constants  
 # ==============================================================================
 
-# All supported generation tasks across different model variants
-TASK_TYPES = ["text2music", "repaint", "cover", "extract", "lego", "complete", "prelude"]
+# All supported generation tasks across different model variants.
+# cover-nofsq is a variant of cover that bypasses the DiT's FSQ roundtrip on
+# src_latents, keeping full-resolution VAE conditioning (higher acoustic
+# fidelity, less freedom to morph timbre).
+TASK_TYPES = ["text2music", "repaint", "cover", "cover-nofsq", "extract", "lego", "complete", "prelude"]
 
 # Task types available for turbo models (optimized subset for speed)
 # - text2music: Generate from text descriptions
-# - repaint: Selective audio editing/regeneration  
+# - repaint: Selective audio editing/regeneration
 # - cover: Style transfer using reference audio
-TASK_TYPES_TURBO = ["text2music", "repaint", "cover"]
+# - cover-nofsq: cover with FSQ roundtrip skipped (raw VAE latents as context)
+TASK_TYPES_TURBO = ["text2music", "repaint", "cover", "cover-nofsq"]
 
 # Task types available for base models (full feature set)
 # Additional tasks requiring more computational resources:
 # - extract: Separate individual tracks/stems from audio
 # - lego: Multi-track generation (add layers)
 # - complete: Automatic completion of partial audio
-TASK_TYPES_BASE = ["text2music", "repaint", "cover", "extract", "lego", "complete", "prelude"]
+TASK_TYPES_BASE = ["text2music", "repaint", "cover", "cover-nofsq", "extract", "lego", "complete", "prelude"]
 
 
 # ==============================================================================
@@ -128,6 +132,7 @@ TASK_INSTRUCTIONS = {
     "text2music": "Fill the audio semantic mask based on the given conditions:",
     "repaint": "Repaint the mask area based on the given conditions:",
     "cover": "Generate audio semantic tokens based on the given conditions:",
+    "cover-nofsq": "Generate audio semantic tokens based on the given conditions:",
     "extract": "Extract the {TRACK_NAME} track from the audio:",
     "extract_default": "Extract the track from the audio:",
     "lego": "Generate the {TRACK_NAME} track based on the audio context:",

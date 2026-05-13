@@ -386,7 +386,7 @@ def generate_music(
         # LM-based Chain-of-Thought reasoning
         # Skip LM for cover/repaint tasks - these tasks use reference/src audio directly
         # and don't need LM to generate audio codes
-        skip_lm_tasks = {"cover", "repaint"}
+        skip_lm_tasks = {"cover", "cover-nofsq", "repaint"}
         
         # Determine if we should use LLM
         # LLM is needed for:
@@ -570,7 +570,7 @@ def generate_music(
                 dit_input_vocal_language = lm_generated_metadata.get("vocal_language", dit_input_vocal_language)
 
         # Repaint/cover: no LM run, so conditioning must come from params (caption + lyrics from GUI).
-        if params.task_type in ("repaint", "cover"):
+        if params.task_type in ("repaint", "cover", "cover-nofsq"):
             dit_input_caption = params.caption or dit_input_caption
             dit_input_lyrics = params.lyrics if params.lyrics is not None else dit_input_lyrics
             logger.info(f"[generate_music] Repaint/Cover task: using params.caption='{params.caption}', params.lyrics='{params.lyrics}'")

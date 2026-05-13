@@ -1594,7 +1594,7 @@ def create_app() -> FastAPI:
                 full_analysis_only = bool(req.full_analysis_only)
 
                 # Unload LM for cover tasks on MPS to reduce memory; reload lazily when needed.
-                if req.task_type == "cover" and h.device == "mps":
+                if req.task_type in ("cover", "cover-nofsq") and h.device == "mps":
                     if getattr(app.state, "_llm_initialized", False) and getattr(llm, "llm_initialized", False):
                         try:
                             print("[API Server] unloading.")
@@ -1927,7 +1927,7 @@ def create_app() -> FastAPI:
 
                 # Generate music using unified interface
                 sequential_runs = 1
-                if req.task_type == "cover" and h.device == "mps":
+                if req.task_type in ("cover", "cover-nofsq") and h.device == "mps":
                     # If user asked for multiple outputs, run sequentially on MPS to avoid OOM.
                     if config.batch_size is not None and config.batch_size > 1:
                         sequential_runs = int(config.batch_size)

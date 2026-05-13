@@ -43,6 +43,7 @@ class ServiceGenerateMixin:
         audio_code_hints: Optional[Union[str, List[str]]] = None,
         infer_method: str = "ode",
         timesteps: Optional[List[float]] = None,
+        task_type: str = "",
     ) -> Dict[str, Any]:
         """Generate music latents and metadata from text/audio conditioning inputs.
 
@@ -107,6 +108,7 @@ class ServiceGenerateMixin:
             audio_code_hints=normalized["audio_code_hints"],
             audio_cover_strength=audio_cover_strength,
             cover_noise_strength=cover_noise_strength,
+            task_type=task_type,
         )
         payload = self._unpack_service_processed_data(self.preprocess_batch(batch))
         seed_param = self._resolve_service_seed_param(normalized["seed_list"])

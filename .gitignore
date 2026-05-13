@@ -46,6 +46,14 @@ ACE-Step-1.5/gradio_temp/
 ACE-Step-1.5/tmp/
 *.log
 
+# ── Nested repos / experiments / diagnostic output ─────────────────────────────
+Side-Step/
+training/
+experiments/
+extract_experiments/
+complete_diag*/
+jesse_lora_smoke/
+
 # ── Env / secrets ───────────────────────────────────────────────────────────────
 .env
 .env.*
