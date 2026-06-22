@@ -18,4 +18,4 @@ the fix is basically a one-liner in `acestep/core/generation/handler/lora/lifecy
 
 ## DCW
 
-i cannot for the life of me figure out how to get DCW to work. At all. It produces garbled insanity. My only half-theory is that it's because we don't initialize the LM when generating with ACE-Step — but that sounds like a weird reason for DCW to break everything. If you've gotten it working, I'd love to know how.
+i cannot for the life of me figure out how to get DCW to work. At all. it produces garbled insanity. my only half-theory is that it's because we don't initialize the LM when generating with ACE-Step — but that sounds like a weird reason for DCW to break everything. if you've gotten it working, i'd love to know how.
