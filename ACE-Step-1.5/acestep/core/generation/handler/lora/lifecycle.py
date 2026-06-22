@@ -358,7 +358,9 @@ def remove_lora(self, adapter_name: str) -> str:
             if hasattr(self, "_memory_allocated"):
                 mem_before = self._memory_allocated() / (1024**3)
                 logger.info(f"VRAM before LoRA unload: {mem_before:.2f}GB")
-            self.model.decoder = decoder.get_base_model()
+            # unload() (not get_base_model()) so the LoRA modules are actually
+            # removed and the base weights restore cleanly — see unload_lora().
+            self.model.decoder = decoder.unload()
             load_result = self.model.decoder.load_state_dict(self._base_decoder, strict=False)
             if load_result.missing_keys:
                 logger.warning(f"Missing keys when restoring decoder: {load_result.missing_keys[:5]}")
@@ -435,8 +437,19 @@ def unload_lora(self) -> str:
             PeftModel = None  # type: ignore[assignment]
 
         if PeftModel is not None and isinstance(self.model.decoder, PeftModel):
-            logger.info("Extracting base model from PEFT wrapper")
-            self.model.decoder = self.model.decoder.get_base_model()
+            logger.info("Unloading PEFT adapters and restoring base decoder")
+            # PeftModel.unload() strips the LoRA modules (lora_A/lora_B/
+            # magnitude/base_layer) and restores the original Linear layers.
+            # This MUST be used instead of get_base_model(): get_base_model()
+            # leaves the LoRA modules attached, so keys stay nested under
+            # `*.base_layer.weight` and the load_state_dict(strict=False) below
+            # matched almost nothing — the base weights were never restored and
+            # the adapter was never removed. That stale state caused adapter
+            # bleed across LoRA switches and non-deterministic output on reload.
+            self.model.decoder = self.model.decoder.unload()
+            # Structure is back to the pristine layout now, so the backed-up
+            # base weights restore cleanly (defends against any DoRA-load that
+            # perturbed base_layer.weight).
             load_result = self.model.decoder.load_state_dict(self._base_decoder, strict=False)
             if load_result.missing_keys:
                 logger.warning(f"Missing keys when restoring decoder: {load_result.missing_keys[:5]}")
