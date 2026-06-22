@@ -33,9 +33,22 @@ class PaddingMixin:
             for i in range(actual_batch_size):
                 if processed_src_audio is not None:
                     if is_cover_task:
-                        # Cover task: Use src_audio directly without padding
-                        batch_target_wavs = processed_src_audio
-                        padding_info_batch.append({"left_padding_duration": 0.0, "right_padding_duration": 0.0})
+                        # Cover task: left-pad source with 5 latent frames (200ms)
+                        # of synthetic silence so the user's actual audio lands at
+                        # DiT sequence position 5+ rather than position 0. Diag
+                        # showed pred_latents at positions 0-2 have anomalous stats
+                        # (std 27% wider than interior, sign-flipped mean) regardless
+                        # of xt-init clamping — i.e. the DiT itself misbehaves at
+                        # sequence position 0. Pad here, trim 9600 samples back off
+                        # pred_wavs in generate_music_decode for cover/cover-nofsq.
+                        cover_head_pad_samples = 5 * 1920  # 200ms @ 48kHz
+                        batch_target_wavs = torch.nn.functional.pad(
+                            processed_src_audio, (cover_head_pad_samples, 0), "constant", 0
+                        )
+                        padding_info_batch.append({
+                            "left_padding_duration": cover_head_pad_samples / 48000.0,
+                            "right_padding_duration": 0.0,
+                        })
                     elif is_repaint_task or is_lego_task:
                         # Repaint/lego task: May need padding for outpainting
                         src_audio_duration = processed_src_audio.shape[-1] / 48000.0

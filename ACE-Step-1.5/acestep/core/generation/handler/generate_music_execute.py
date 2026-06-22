@@ -1,6 +1,6 @@
 """Execution helper for ``generate_music`` service invocation with progress tracking."""
 
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 
 class GenerateMusicExecuteMixin:
@@ -30,13 +30,32 @@ class GenerateMusicExecuteMixin:
         infer_steps_for_progress = len(timesteps) if timesteps else inference_steps
         progress_desc = f"Generating music (batch size: {actual_batch_size})..."
         progress(0.52, desc=progress_desc)
+
+        # Per-step DiT callback: maps `step_idx/total` into the diffusion band
+        # [0.52, 0.79] that the thread estimator also targets. This is TRUTH
+        # (driven from inside the DiT loop) and replaces the time-interpolation
+        # estimator for paths that thread it through (PyTorch xl-base/xl-turbo
+        # generate_audio). The estimator is kept as a fallback for paths that
+        # don't (e.g., MLX); api_server._progress_cb throttles by delta ≥ 0.01
+        # so the per-step monotonic ticks dominate when both fire.
+        _DIFF_START, _DIFF_END = 0.52, 0.79
+
+        def _per_step_progress(step_idx: int, total: int) -> None:
+            if progress is None or total <= 0:
+                return
+            frac = min(1.0, max(0.0, (step_idx + 1) / total))
+            try:
+                progress(_DIFF_START + (_DIFF_END - _DIFF_START) * frac, desc=progress_desc)
+            except Exception:
+                pass
+
         stop_event = None
         progress_thread = None
         try:
             stop_event, progress_thread = self._start_diffusion_progress_estimator(
                 progress=progress,
-                start=0.52,
-                end=0.79,
+                start=_DIFF_START,
+                end=_DIFF_END,
                 infer_steps=infer_steps_for_progress,
                 batch_size=actual_batch_size,
                 duration_sec=audio_duration if audio_duration and audio_duration > 0 else None,
@@ -66,6 +85,7 @@ class GenerateMusicExecuteMixin:
                 return_intermediate=service_inputs["should_return_intermediate"],
                 timesteps=timesteps,
                 task_type=task_type,
+                progress_callback=_per_step_progress,
             )
         finally:
             if stop_event is not None:

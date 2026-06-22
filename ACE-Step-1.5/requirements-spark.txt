@@ -45,3 +45,7 @@ peft>=0.18.0
 lycoris-lora
 lightning>=2.0.0
 tensorboard>=2.0.0
+
+# DCW (Differential Correction in Wavelet domain) — sampler-side correction for SNR-t bias
+pytorch_wavelets
+PyWavelets

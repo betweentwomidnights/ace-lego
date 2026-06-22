@@ -13,6 +13,7 @@
 # limitations under the License.
 import copy
 import math
+import os
 import time
 from typing import Callable, List, Optional, Union
 
@@ -49,6 +50,10 @@ try:
 except ImportError:
     from configuration_acestep_v15 import AceStepConfig
     from apg_guidance import adg_forward, apg_forward, cfg_forward, MomentumBuffer
+
+# DCW (Differential Correction in Wavelet domain) — CVPR 2026.
+# Sampler-side correction for SNR-t bias. See acestep/models/common/dcw_correction.py.
+from acestep.models.common.dcw_correction import DCWCorrector
 
 
 logger = logging.get_logger(__name__)
@@ -1877,6 +1882,12 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
         sampler_mode: str = "euler",
         velocity_norm_threshold: float = 0.0,
         velocity_ema_factor: float = 0.0,
+        dcw_enabled: bool = False,
+        dcw_mode: str = "low",
+        dcw_scaler: float = 0.02,
+        dcw_high_scaler: float = 0.0,
+        dcw_wavelet: str = "haar",
+        progress_callback: Optional[Callable[[int, int], None]] = None,
         **kwargs,
     ):
         # Backward-compat: accept the old misspelled key "diffusion_guidance_sale"
@@ -2005,9 +2016,38 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
             logger.warning("Heun sampler is not compatible with SDE; falling back to Euler.")
             use_heun = False
 
+        # DCW — opt-in per-band wavelet-domain correction (CVPR 2026).
+        # No-op unless `dcw_enabled=True` and a non-zero scaler is configured.
+        # Env-var overrides for fast tuning (set in docker-compose env: and `docker restart`):
+        #   ACESTEP_DCW_ENABLED=0/1, ACESTEP_DCW_MODE=low|high|double|pix,
+        #   ACESTEP_DCW_SCALER=0.02, ACESTEP_DCW_HIGH_SCALER=0.0, ACESTEP_DCW_WAVELET=haar
+        _env_enabled = os.environ.get("ACESTEP_DCW_ENABLED")
+        if _env_enabled is not None:
+            dcw_enabled = _env_enabled.strip().lower() in ("1", "true", "yes", "on")
+        dcw_mode = os.environ.get("ACESTEP_DCW_MODE", dcw_mode)
+        dcw_scaler = float(os.environ.get("ACESTEP_DCW_SCALER", str(dcw_scaler)))
+        dcw_high_scaler = float(os.environ.get("ACESTEP_DCW_HIGH_SCALER", str(dcw_high_scaler)))
+        dcw_wavelet = os.environ.get("ACESTEP_DCW_WAVELET", dcw_wavelet)
+        dcw_corrector = DCWCorrector(
+            enabled=dcw_enabled,
+            mode=dcw_mode,
+            scaler=dcw_scaler,
+            high_scaler=dcw_high_scaler,
+            wavelet=dcw_wavelet,
+        )
+
         _switched_to_non_cover = False
         with torch.no_grad():
             for step_idx, (t_curr, t_prev) in enumerate(iterator):
+                # Per-step progress: drives the wrapper's honest bar even for
+                # cover (whose tqdm output isn't parseable via log_buffer).
+                # `infer_steps` here is post-cover-truncation (see L1987), so
+                # the fraction maps to actual completed work, not requested.
+                if progress_callback is not None:
+                    try:
+                        progress_callback(step_idx, infer_steps)
+                    except Exception:
+                        pass
                 if step_idx >= cover_steps and not _switched_to_non_cover:
                     _switched_to_non_cover = True
                     if do_cfg_guidance:
@@ -2069,6 +2109,14 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
                 # Velocity EMA smoothing — stabilises denoising trajectory
                 if use_ema and prev_vt is not None:
                     vt = (1.0 - velocity_ema_factor) * vt + velocity_ema_factor * prev_vt
+
+                # Cache pre-step latent so DCW can reconstruct the predicted
+                # clean sample `denoised = x - v * t` after the sampler update.
+                # Stash raw velocity (pre-Heun-averaging) so x0 reconstruction
+                # uses the single-evaluation v(t_curr), matching the reference
+                # FLUX scheduler's `x0 = sample - sigma * v`.
+                xt_before_step = xt
+                vt_for_denoise = vt
 
                 # Update x_t based on inference method
                 if infer_method == "sde":
@@ -2141,6 +2189,14 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
                     dt_tensor = dt * torch.ones((bsz,), device=device, dtype=dtype).unsqueeze(-1).unsqueeze(-1)
                     xt = xt - vt * dt_tensor
                     t_after_step = t_prev
+
+                # DCW correction — push x_next's frequency band(s) away from
+                # the predicted clean sample. Scaler decays with t_curr.
+                if dcw_corrector.is_active:
+                    t_curr_f = float(t_curr) if torch.is_tensor(t_curr) else t_curr
+                    t_unsq = t_curr_f * torch.ones((bsz,), device=device, dtype=dtype).unsqueeze(-1).unsqueeze(-1)
+                    denoised = xt_before_step - vt_for_denoise * t_unsq
+                    xt = dcw_corrector.apply(xt, denoised, t_curr_f)
 
                 prev_vt = vt
 

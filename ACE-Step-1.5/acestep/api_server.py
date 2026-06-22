@@ -2727,12 +2727,22 @@ def create_app() -> FastAPI:
                         if status == 0 and (current_time - create_time) > TASK_TIMEOUT_SECONDS:
                             data_list.append({"task_id": task_id, "result": data, "status": 2})
                         else:
-                            data_list.append({
+                            # Surface numeric progress at the OUTER level on
+                            # the local_cache hot path too. The job_store
+                            # fallback (~L2802) already does this; without the
+                            # parallel surfacing here, cover hits the wrapper's
+                            # time-based estimator (90% plateau) because
+                            # raw_progress=None on every poll.
+                            inner_progress = data_json[0].get("progress")
+                            outer = {
                                 "task_id": task_id,
                                 "result": data,
                                 "status": int(status) if status is not None else 1,
-                                "progress_text": log_buffer.last_message
-                            })
+                                "progress_text": log_buffer.last_message,
+                            }
+                            if isinstance(inner_progress, (int, float)):
+                                outer["progress"] = float(inner_progress)
+                            data_list.append(outer)
                     continue
 
             # Fallback to job_store query
@@ -2793,6 +2803,13 @@ def create_app() -> FastAPI:
                     "task_id": task_id,
                     "result": json.dumps(result_data, ensure_ascii=False),
                     "status": status_int,
+                    # Surface numeric progress (0.0–1.0 float, set by _progress_cb
+                    # → job_store.update_progress) at the OUTER level too. It was
+                    # only buried inside result_data, so wrapper consumers reading
+                    # result.get("progress") always got None — breaking cover's
+                    # honest-progress path (cover's tqdm doesn't surface "n/total"
+                    # via log_buffer, unlike complete/lego). See progress.py.
+                    "progress": float(rec.progress) if rec else 0.0,
                     "progress_text": current_log
                 })
             else:
@@ -3273,8 +3290,21 @@ def create_app() -> FastAPI:
         import gc
         handler: AceStepHandler = app.state.handler
         try:
-            for attr in ("model", "vae", "text_encoder", "acoustic_model",
-                         "silence_latent", "tokenize", "detokenize"):
+            # LoRA service holds a strong ref to model.decoder; must clear first
+            # or the DiT can't be GC'd even after handler.model is nulled.
+            for attr in ("_lora_service", "_lora_adapter_registry",
+                         "_lora_scale_state", "_lora_active_adapter",
+                         "_lora_last_scale_report", "_active_loras",
+                         "_base_decoder"):
+                if hasattr(handler, attr):
+                    try:
+                        setattr(handler, attr, None)
+                    except Exception:
+                        pass
+
+            for attr in ("model", "vae", "text_encoder", "text_tokenizer",
+                         "acoustic_model", "reward_model", "silence_latent",
+                         "tokenize", "detokenize"):
                 obj = getattr(handler, attr, None)
                 if obj is not None:
                     try:
@@ -3282,7 +3312,16 @@ def create_app() -> FastAPI:
                         del obj
                     except Exception:
                         pass
+
+            # Clear torch.compile artifacts if compilation was ever used.
+            try:
+                import torch._dynamo
+                torch._dynamo.reset()
+            except Exception:
+                pass
+
             gc.collect()
+            gc.collect()  # second pass breaks some reference cycles
             import torch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

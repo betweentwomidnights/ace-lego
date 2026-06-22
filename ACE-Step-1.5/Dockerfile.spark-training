@@ -1,30 +1,50 @@
 # Dockerfile.spark-training
-# ACE-Step 1.5 LoRA training — layered on top of production image
+# ACE-Step 1.5 LoRA training + captioning — layered on FA2 production image
 #
-# Build:
+# Build (from ACE-Step-1.5 dir):
 #   docker build -f Dockerfile.spark-training -t ace-step-training:latest .
 #
-# Run:
+# Run (training + captioning):
 #   docker run --gpus all -p 8006:8001 \
 #     -v /home/kev/ace/checkpoints:/app/checkpoints \
 #     -v /home/kev/ace/data:/app/data \
 #     -v /home/kev/ace/training:/app/training \
+#     -v /home/kev/ace/Side-Step:/app/Side-Step \
+#     -v /home/kev/SAOS_dataset_v1:/app/dataset \
+#     -e ACESTEP_INIT_LLM=true \
+#     -e ACESTEP_CONFIG_PATH=acestep-v15-xl-base \
 #     ace-step-training:latest
+#
+# Side-Step is volume-mounted. Its deps are pre-installed in the image.
 
-FROM ace-step-spark:latest
+FROM ace-step-spark:xl-base-fa2
 
-# ── Additional training dependencies ─────────────────────────────────
-# bitsandbytes  : 8-bit AdamW optimizer (VRAM savings)
-# prodigyopt    : Adaptive learning rate optimizer
-# yt-dlp        : Download training audio from YouTube
+# ── Side-Step dependencies (not already in base image) ───────────────
+# Torch, transformers, diffusers, safetensors, einops already present.
 RUN python3 -m pip install --no-cache-dir --break-system-packages \
+        peft \
+        "accelerate>=1.12.0" \
+        "lightning>=2.0.0" \
         bitsandbytes \
         prodigyopt \
+        "lycoris-lora>=2.0.0" \
+        "loguru>=0.7.3" \
+        "tensorboard>=2.20.0" \
+        "rich>=13.0.0" \
+        "pyloudnorm>=0.1.0" \
+        "vector-quantize-pytorch>=1.27.15" \
+        "lyricsgenius>=3.0.1" \
+        "google-genai>=1.0.0" \
+        "openai>=1.54.0" \
+        soundfile \
         yt-dlp
 
 # Training data and output directories
-VOLUME ["/app/training"]
+VOLUME ["/app/training", "/app/dataset", "/app/Side-Step"]
 
-# Use same entrypoint — training API routes are already in api_server.py
-# Port 8001 internally, map to 8006 (or whatever) externally
+# Enable LLM by default for captioning tasks
+ENV ACESTEP_INIT_LLM=true \
+    ACESTEP_CONFIG_PATH=acestep-v15-xl-base \
+    PYTHONPATH=/app:/app/Side-Step
+
 CMD ["python3", "acestep/api_server.py", "--host", "0.0.0.0", "--port", "8001"]

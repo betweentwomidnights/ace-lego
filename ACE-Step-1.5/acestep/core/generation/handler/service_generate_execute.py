@@ -1,7 +1,7 @@
 """Execution helpers for service generation diffusion and output assembly."""
 
 import random
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 from loguru import logger
@@ -112,6 +112,7 @@ class ServiceGenerateExecuteMixin:
         infer_method: str,
         shift: float,
         audio_cover_strength: float,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> Tuple[Dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor]:
         """Execute condition preparation and diffusion using MLX or PyTorch backend."""
         dit_backend = (
@@ -189,9 +190,13 @@ class ServiceGenerateExecuteMixin:
                         )
                     except Exception as exc:
                         logger.warning("[service_generate] MLX diffusion failed (%s); falling back to PyTorch.", exc)
-                        outputs = self.model.generate_audio(**generate_kwargs)
+                        outputs = self.model.generate_audio(
+                            **generate_kwargs, progress_callback=progress_callback
+                        )
                 else:
                     logger.info("[service_generate] DiT diffusion via PyTorch ({})...", self.device)
-                    outputs = self.model.generate_audio(**generate_kwargs)
+                    outputs = self.model.generate_audio(
+                        **generate_kwargs, progress_callback=progress_callback
+                    )
 
         return outputs, encoder_hidden_states, encoder_attention_mask, context_latents

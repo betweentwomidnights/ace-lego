@@ -75,6 +75,28 @@ class GenerateMusicDecodeMixin:
                 "Generation produced zero latents. "
                 "This usually indicates a checkpoint/config mismatch or unsupported setup."
             )
+        # Env-var fallback for the latent post-processing knobs. Lets us tune
+        # latent_rescale / latent_shift per-container via compose env (mirrors
+        # the ACESTEP_DCW_* pattern) so we can ear-test values by recreating the
+        # container instead of an API change + code rebuild every iteration. The
+        # env value only applies when the caller left the param at its default:
+        # the API never sets these, but an explicit gradio slider still wins.
+        env_shift = os.environ.get("ACESTEP_LATENT_SHIFT")
+        if env_shift is not None and latent_shift == 0.0:
+            try:
+                latent_shift = float(env_shift)
+            except ValueError:
+                logger.warning(
+                    f"[generate_music] Ignoring invalid ACESTEP_LATENT_SHIFT={env_shift!r}"
+                )
+        env_rescale = os.environ.get("ACESTEP_LATENT_RESCALE")
+        if env_rescale is not None and latent_rescale == 1.0:
+            try:
+                latent_rescale = float(env_rescale)
+            except ValueError:
+                logger.warning(
+                    f"[generate_music] Ignoring invalid ACESTEP_LATENT_RESCALE={env_rescale!r}"
+                )
         if latent_shift != 0.0 or latent_rescale != 1.0:
             logger.info(
                 f"[generate_music] Applying latent post-processing: shift={latent_shift}, "
@@ -101,6 +123,7 @@ class GenerateMusicDecodeMixin:
         progress: Any,
         use_tiled_decode: bool,
         time_costs: Dict[str, Any],
+        task_type: str = "",
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, Any]]:
         """Decode predicted latents and update decode timing metrics.
 
@@ -190,9 +213,54 @@ class GenerateMusicDecodeMixin:
                 del pred_latents_for_decode
                 if pred_wavs.dtype != torch.float32:
                     pred_wavs = pred_wavs.float()
+                # Cover/cover-nofsq: trim the 200ms (9600 samples) of synthetic
+                # silence head we left-padded onto processed_src_audio in
+                # padding_utils.py. That pad pushed the user's actual audio off
+                # DiT sequence position 0 (where the DiT misbehaves) into interior
+                # positions; here we drop the corresponding silence region from
+                # the decoded waveform so the user gets back exactly their requested
+                # duration with no leading silence and no boundary blip.
+                if task_type in ("cover", "cover-nofsq") and pred_wavs.shape[-1] > 9600:
+                    pred_wavs = pred_wavs[..., 9600:]
+                    logger.warning(
+                        f"[COVER-EDGE-FIX] Trimmed 9600 leading samples (200ms) "
+                        f"from cover output to discard DiT position-0 region. "
+                        f"new shape: {tuple(pred_wavs.shape)}"
+                    )
+                # Output peak handling. Default mode "limit" reproduces the
+                # original attenuate-only safety bit-exactly: each batch item is
+                # scaled DOWN only if its peak exceeds the ceiling, never boosted.
+                # ACESTEP_PEAK_MODE=normalize instead scales every item so its peak
+                # hits the ceiling — boosting quiet output too. That's the SA3-style
+                # peak-normalize that beat latent_rescale on the stable-audio stack,
+                # and (unlike rescale) it acts on the waveform, not the latent space.
+                # Per-item over the batch (peak shape [B,1,1]).
+                peak_ceiling = 1.0
+                env_ceiling = os.environ.get("ACESTEP_PEAK_CEILING")
+                if env_ceiling is not None:
+                    try:
+                        peak_ceiling = float(env_ceiling)
+                    except ValueError:
+                        logger.warning(
+                            f"[generate_music] Ignoring invalid ACESTEP_PEAK_CEILING={env_ceiling!r}"
+                        )
+                peak_mode = os.environ.get("ACESTEP_PEAK_MODE", "limit").strip().lower()
                 peak = pred_wavs.abs().amax(dim=[1, 2], keepdim=True)
-                if torch.any(peak > 1.0):
-                    pred_wavs = pred_wavs / peak.clamp(min=1.0)
+                if peak_mode == "normalize":
+                    # Boost or attenuate to hit the ceiling exactly. Floor the
+                    # divisor so a near-silent item isn't amplified to full scale
+                    # (caps boost at ceiling/0.1 = 10x at the default ceiling).
+                    pred_wavs = pred_wavs * (peak_ceiling / peak.clamp(min=0.1))
+                else:
+                    # limit (default): attenuate-only. (ceiling/peak).clamp(max=1.0)
+                    # == the original `/ peak.clamp(min=1.0)` when ceiling == 1.0,
+                    # and is a true no-op (x*1.0) when nothing exceeds the ceiling.
+                    pred_wavs = pred_wavs * (peak_ceiling / peak.clamp(min=1e-8)).clamp(max=1.0)
+                if peak_mode == "normalize" or peak_ceiling != 1.0:
+                    logger.info(
+                        f"[generate_music] Peak {peak_mode}: ceiling={peak_ceiling}, "
+                        f"in_peaks={[round(p, 4) for p in peak.flatten().tolist()]}"
+                    )
                 self._empty_cache()
         end_time = time.time()
         time_costs["vae_decode_time_cost"] = end_time - start_time

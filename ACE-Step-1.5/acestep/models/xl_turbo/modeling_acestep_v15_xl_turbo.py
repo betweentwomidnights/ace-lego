@@ -13,6 +13,7 @@
 # limitations under the License.
 import copy
 import math
+import os
 import time
 from typing import Callable, List, Optional, Union
 
@@ -46,6 +47,10 @@ try:
     from .configuration_acestep_v15 import AceStepConfig
 except ImportError:
     from configuration_acestep_v15 import AceStepConfig
+
+# DCW (Differential Correction in Wavelet domain) — CVPR 2026.
+# Sampler-side correction for SNR-t bias. See acestep/models/common/dcw_correction.py.
+from acestep.models.common.dcw_correction import DCWCorrector
 
 
 logger = logging.get_logger(__name__)
@@ -1866,6 +1871,12 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
         sampler_mode: str = "euler",
         velocity_norm_threshold: float = 0.0,
         velocity_ema_factor: float = 0.0,
+        dcw_enabled: bool = False,
+        dcw_mode: str = "low",
+        dcw_scaler: float = 0.02,
+        dcw_high_scaler: float = 0.0,
+        dcw_wavelet: str = "haar",
+        progress_callback: Optional[Callable[[int, int], None]] = None,
         **kwargs,
     ):
         # Valid shifts: only discrete values 1, 2, 3 are supported
@@ -2014,9 +2025,36 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
             logger.warning("Heun sampler is not compatible with SDE; falling back to Euler.")
             use_heun = False
 
+        # DCW — opt-in per-band wavelet-domain correction (CVPR 2026).
+        # No-op unless `dcw_enabled=True` and a non-zero scaler is configured.
+        # Env-var overrides for fast tuning (set in docker-compose env: and `docker compose up -d`):
+        #   ACESTEP_DCW_ENABLED=0/1, ACESTEP_DCW_MODE=low|high|double|pix,
+        #   ACESTEP_DCW_SCALER=0.02, ACESTEP_DCW_HIGH_SCALER=0.0, ACESTEP_DCW_WAVELET=haar
+        _env_enabled = os.environ.get("ACESTEP_DCW_ENABLED")
+        if _env_enabled is not None:
+            dcw_enabled = _env_enabled.strip().lower() in ("1", "true", "yes", "on")
+        dcw_mode = os.environ.get("ACESTEP_DCW_MODE", dcw_mode)
+        dcw_scaler = float(os.environ.get("ACESTEP_DCW_SCALER", str(dcw_scaler)))
+        dcw_high_scaler = float(os.environ.get("ACESTEP_DCW_HIGH_SCALER", str(dcw_high_scaler)))
+        dcw_wavelet = os.environ.get("ACESTEP_DCW_WAVELET", dcw_wavelet)
+        dcw_corrector = DCWCorrector(
+            enabled=dcw_enabled,
+            mode=dcw_mode,
+            scaler=dcw_scaler,
+            high_scaler=dcw_high_scaler,
+            wavelet=dcw_wavelet,
+        )
+
         cover_steps = int(num_steps * audio_cover_strength)
         _switched_to_non_cover = False
         for step_idx in range(num_steps):
+            # Per-step progress: see xl-base counterpart. `num_steps` is the
+            # actual scheduled count (turbo uses a fixed 8-step schedule).
+            if progress_callback is not None:
+                try:
+                    progress_callback(step_idx, num_steps)
+                except Exception:
+                    pass
             current_timestep = t_schedule[step_idx].item()
             t_curr_tensor = current_timestep * torch.ones((bsz,), device=device, dtype=dtype)
             
@@ -2053,6 +2091,11 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
             # Velocity EMA smoothing — stabilises denoising trajectory
             if use_ema and prev_vt is not None:
                 vt = (1.0 - velocity_ema_factor) * vt + velocity_ema_factor * prev_vt
+
+            # Cache pre-step latent + velocity so DCW can reconstruct
+            # `denoised = x - v * t` after the sampler update.
+            xt_before_step = xt
+            vt_for_denoise = vt
 
             # On final step, directly compute x0 from noise
             if step_idx == num_steps - 1:
@@ -2108,6 +2151,13 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
                 dt_tensor = dt * torch.ones((bsz,), device=device, dtype=dtype).unsqueeze(-1).unsqueeze(-1)
                 xt = xt - vt * dt_tensor
                 t_after_step = next_timestep
+
+            # DCW correction — push x_next's frequency band(s) away from
+            # the predicted clean sample. Scaler decays with current_timestep.
+            if dcw_corrector.is_active:
+                t_unsq = current_timestep * torch.ones((bsz,), device=device, dtype=dtype).unsqueeze(-1).unsqueeze(-1)
+                denoised = xt_before_step - vt_for_denoise * t_unsq
+                xt = dcw_corrector.apply(xt, denoised, current_timestep)
 
             prev_vt = vt
 

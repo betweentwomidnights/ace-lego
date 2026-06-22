@@ -121,10 +121,40 @@ class InitServiceLoaderMixin:
         return attn_implementation
 
     def _load_vae_model(self, *, checkpoint_dir: str, device: str, compile_model: bool) -> str:
-        """Load and optionally compile the VAE module."""
+        """Load and optionally compile the VAE module.
+
+        By default the stock ``<checkpoint_dir>/vae`` is loaded. Setting the
+        ``ACESTEP_VAE_PATH`` env var swaps in an alternate VAE (e.g. ScragVAE).
+        The value may be an absolute path or a name/relative path resolved
+        against ``checkpoint_dir`` (e.g. ``ACESTEP_VAE_PATH=scrag-vae`` ->
+        ``<checkpoint_dir>/scrag-vae``). Alternate VAEs must be an
+        ``AutoencoderOobleck`` with the same config as the stock VAE (the
+        ScragVAE differs only in decoder weights), so the swap is decode-only
+        and stays compatible with all existing DiT checkpoints.
+        """
         from diffusers.models import AutoencoderOobleck
 
-        vae_checkpoint_path = os.path.join(checkpoint_dir, "vae")
+        vae_override = os.environ.get("ACESTEP_VAE_PATH", "").strip()
+        if vae_override:
+            vae_checkpoint_path = (
+                vae_override
+                if os.path.isabs(vae_override)
+                else os.path.join(checkpoint_dir, vae_override)
+            )
+            if os.path.exists(vae_checkpoint_path):
+                logger.info(
+                    f"[_load_vae_model] ACESTEP_VAE_PATH set -> loading alternate VAE from {vae_checkpoint_path}"
+                )
+            else:
+                fallback = os.path.join(checkpoint_dir, "vae")
+                logger.warning(
+                    f"[_load_vae_model] ACESTEP_VAE_PATH='{vae_override}' not found at "
+                    f"{vae_checkpoint_path}; falling back to stock VAE at {fallback}"
+                )
+                vae_checkpoint_path = fallback
+        else:
+            vae_checkpoint_path = os.path.join(checkpoint_dir, "vae")
+
         if not os.path.exists(vae_checkpoint_path):
             raise FileNotFoundError(f"VAE checkpoint not found at {vae_checkpoint_path}")
 

@@ -5,7 +5,7 @@ It coordinates request normalization, batch preparation, diffusion execution,
 and output attachment without owning model internals.
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
 
@@ -44,6 +44,7 @@ class ServiceGenerateMixin:
         infer_method: str = "ode",
         timesteps: Optional[List[float]] = None,
         task_type: str = "",
+        progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> Dict[str, Any]:
         """Generate music latents and metadata from text/audio conditioning inputs.
 
@@ -135,6 +136,7 @@ class ServiceGenerateMixin:
                 infer_method=infer_method,
                 shift=shift,
                 audio_cover_strength=audio_cover_strength,
+                progress_callback=progress_callback,
             )
         )
         return self._attach_service_generate_outputs(
